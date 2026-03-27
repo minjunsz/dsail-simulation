@@ -1,9 +1,15 @@
 ## Installation
 
 ```bash
-uv venv --python 3.12
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-uv pip install genesis-world pyzmq aiohttp aiortc av
+sudo apt-get update && sudo apt-get install libglu1-mesa
+
+uv venv --python 3.11
+uv pip install isaacsim[all]==5.1.0 --extra-index-url https://pypi.nvidia.com
+uv pip install pyzmq aiohttp aiortc av usd-core
+
+# activate venv
+isaacsim # accept EULA
+python -m isaacsim --generate-vscode-settings # generate vscode settings
 ```
 
 ## Launch

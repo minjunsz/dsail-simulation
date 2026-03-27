@@ -1,9 +1,10 @@
 """
 Teleop server process.
 
-- Subscribes to the simulator ZeroMQ PUB socket and caches the latest frame.
+- Subscribes to the simulator ZeroMQ PUB socket and caches the latest JPEG frame.
 - Serves a browser client over HTTP.
-- Handles WebRTC signaling over WebSocket (/ws) and streams video via aiortc.
+- Streams video as MJPEG over HTTP (/stream).
+- Handles WASD commands over WebSocket (/ws).
 
 Run (from project root):
     python -m teleop_server.main
@@ -12,17 +13,9 @@ Run (from project root):
 import asyncio
 import json
 import pathlib
-import struct
-from io import BytesIO
 
-import aiohttp
-import numpy as np
 import zmq.asyncio
 from aiohttp import web
-from PIL import Image
-
-import av
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 
 SIMULATOR_ADDR = "tcp://localhost:5555"
 CMD_ADDR = "tcp://localhost:5556"
@@ -32,43 +25,30 @@ STATIC_DIR = pathlib.Path(__file__).parent.parent / "static"
 
 
 # ---------------------------------------------------------------------------
-# Frame store — a simple container; Python GIL makes single-ref assignment safe
+# Frame store — asyncio.Condition for frame-triggered MJPEG delivery
 # ---------------------------------------------------------------------------
 
-class LatestFrame:
-    frame: np.ndarray | None = None
+class FrameStore:
+    def __init__(self):
+        self.jpeg: bytes | None = None
+        self._cond = asyncio.Condition()
 
+    async def put(self, jpeg: bytes) -> None:
+        async with self._cond:
+            self.jpeg = jpeg
+            self._cond.notify_all()
 
-# ---------------------------------------------------------------------------
-# WebRTC video track fed from the frame store
-# ---------------------------------------------------------------------------
-
-class SimulatorVideoTrack(VideoStreamTrack):
-    kind = "video"
-
-    def __init__(self, store: LatestFrame):
-        super().__init__()
-        self._store = store
-
-    async def recv(self):
-        pts, time_base = await self.next_timestamp()
-
-        img = self._store.frame
-        if img is None:
-            # Send a black frame until the simulator connects
-            img = np.zeros((720, 1280, 3), dtype=np.uint8)
-
-        frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-        frame.pts = pts
-        frame.time_base = time_base
-        return frame
+    async def get_next(self) -> bytes:
+        async with self._cond:
+            await self._cond.wait()
+            return self.jpeg
 
 
 # ---------------------------------------------------------------------------
 # ZeroMQ subscriber (runs as a background asyncio task)
 # ---------------------------------------------------------------------------
 
-async def zmq_receiver(store: LatestFrame) -> None:
+async def zmq_receiver(store: FrameStore) -> None:
     ctx = zmq.asyncio.Context()
     sock = ctx.socket(zmq.SUB)
     sock.setsockopt(zmq.RCVHWM, 2)          # keep only the latest frames
@@ -80,7 +60,7 @@ async def zmq_receiver(store: LatestFrame) -> None:
         try:
             data: bytes = await sock.recv()
             jpeg_bytes = data[8:]            # skip 8-byte timestamp header
-            store.frame = np.array(Image.open(BytesIO(jpeg_bytes)))
+            await store.put(jpeg_bytes)
         except Exception as exc:
             print(f"[teleop] recv error: {exc}")
             await asyncio.sleep(0.01)
@@ -98,52 +78,47 @@ async def client_js_handler(request: web.Request) -> web.Response:
     return web.FileResponse(STATIC_DIR / "client.js")
 
 
+async def mjpeg_handler(request: web.Request) -> web.StreamResponse:
+    store: FrameStore = request.app["frame_store"]
+    response = web.StreamResponse(
+        headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame"}
+    )
+    await response.prepare(request)
+
+    try:
+        while True:
+            jpeg = await store.get_next()
+            if jpeg is None:
+                continue
+            payload = (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + jpeg
+                + b"\r\n"
+            )
+            await response.write(payload)
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+
+    return response
+
+
 # ---------------------------------------------------------------------------
-# WebSocket signaling handler
+# WebSocket command handler (WASD only — no WebRTC signaling)
 # ---------------------------------------------------------------------------
 
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    import aiohttp
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    print("[signaling] client connected")
+    print("[cmd] client connected")
 
-    store: LatestFrame = request.app["frame_store"]
     cmd_sock = request.app["cmd_sock"]
-    pc = RTCPeerConnection()
-
-    @pc.on("connectionstatechange")
-    async def on_connection_state_change():
-        print(f"[webrtc] state → {pc.connectionState}")
-        if pc.connectionState in ("failed", "closed"):
-            await pc.close()
-
-    pc.addTrack(SimulatorVideoTrack(store))
-
-    # Wait for ICE gathering to complete so we can send a self-contained offer
-    # (on localhost, host candidates are collected almost instantly)
-    ice_done = asyncio.Event()
-
-    @pc.on("icegatheringstatechange")
-    async def on_ice_gathering_state_change():
-        if pc.iceGatheringState == "complete":
-            ice_done.set()
-
-    offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    await asyncio.wait_for(ice_done.wait(), timeout=10.0)
-
-    await ws.send_json({"type": "offer", "sdp": pc.localDescription.sdp})
-    print("[signaling] offer sent")
 
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             data = json.loads(msg.data)
-            if data["type"] == "answer":
-                await pc.setRemoteDescription(
-                    RTCSessionDescription(sdp=data["sdp"], type="answer")
-                )
-                print("[signaling] answer received — WebRTC handshake complete")
-            elif data["type"] == "move":
+            if data.get("type") == "move":
                 try:
                     cmd_sock.send_json(
                         {"dx": data["dx"], "dy": data["dy"]},
@@ -154,8 +129,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
             break
 
-    await pc.close()
-    print("[signaling] client disconnected")
+    print("[cmd] client disconnected")
     return ws
 
 
@@ -164,7 +138,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 # ---------------------------------------------------------------------------
 
 async def on_startup(app: web.Application) -> None:
-    store = LatestFrame()
+    store = FrameStore()
     app["frame_store"] = store
     app["zmq_task"] = asyncio.create_task(zmq_receiver(store))
 
@@ -189,6 +163,7 @@ def main() -> None:
     app = web.Application()
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+    app.router.add_get("/stream", mjpeg_handler)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_get("/", index_handler)
     app.router.add_get("/client.js", client_js_handler)
