@@ -18,8 +18,10 @@ from PIL import Image
 import genesis as gs
 
 PUBLISH_ADDR = "tcp://*:5555"
+CMD_ADDR = "tcp://*:5556"
 TARGET_FPS = 30
 CAM_RES = (1280, 720)
+MOVE_SPEED = 0.05
 
 
 def main():
@@ -28,6 +30,9 @@ def main():
 
     scene = gs.Scene(show_viewer=False)
     scene.add_entity(gs.morphs.Plane())
+    box = scene.add_entity(
+        gs.morphs.Box(size=(0.3, 0.3, 0.3), pos=(0.0, 0.0, 0.5))
+    )
     cam = scene.add_camera(
         res=CAM_RES,
         pos=(3.5, 0.0, 2.5),
@@ -43,11 +48,27 @@ def main():
     sock.bind(PUBLISH_ADDR)
     print(f"[simulator] publishing frames on {PUBLISH_ADDR}")
 
+    cmd_sock = ctx.socket(zmq.PULL)
+    cmd_sock.setsockopt(zmq.RCVHWM, 1)
+    cmd_sock.bind(CMD_ADDR)
+    print(f"[simulator] receiving commands on {CMD_ADDR}")
+
     interval = 1.0 / TARGET_FPS
 
     while True:
         t0 = time.perf_counter()
 
+        # 1. 명령 polling
+        try:
+            msg = cmd_sock.recv_json(zmq.NOBLOCK)
+            pos = box.get_pos()
+            pos[0] += msg["dx"] * MOVE_SPEED
+            pos[1] += msg["dy"] * MOVE_SPEED
+            box.set_pos(pos)
+        except zmq.Again:
+            pass  # 명령 없으면 현 위치 유지
+
+        # 2. physics step
         scene.step()
         rgb, *_ = cam.render()  # returns (rgb, depth, seg, normal); rgb is np.ndarray (H, W, 3) uint8
 

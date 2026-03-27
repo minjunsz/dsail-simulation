@@ -25,6 +25,7 @@ import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 
 SIMULATOR_ADDR = "tcp://localhost:5555"
+CMD_ADDR = "tcp://localhost:5556"
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8090
 STATIC_DIR = pathlib.Path(__file__).parent.parent / "static"
@@ -107,6 +108,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     print("[signaling] client connected")
 
     store: LatestFrame = request.app["frame_store"]
+    cmd_sock = request.app["cmd_sock"]
     pc = RTCPeerConnection()
 
     @pc.on("connectionstatechange")
@@ -141,6 +143,14 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     RTCSessionDescription(sdp=data["sdp"], type="answer")
                 )
                 print("[signaling] answer received — WebRTC handshake complete")
+            elif data["type"] == "move":
+                try:
+                    cmd_sock.send_json(
+                        {"dx": data["dx"], "dy": data["dy"]},
+                        zmq.NOBLOCK,
+                    )
+                except zmq.Again:
+                    pass
         elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
             break
 
@@ -157,6 +167,12 @@ async def on_startup(app: web.Application) -> None:
     store = LatestFrame()
     app["frame_store"] = store
     app["zmq_task"] = asyncio.create_task(zmq_receiver(store))
+
+    cmd_ctx = zmq.asyncio.Context()
+    cmd_sock = cmd_ctx.socket(zmq.PUSH)
+    cmd_sock.setsockopt(zmq.SNDHWM, 1)
+    cmd_sock.connect(CMD_ADDR)
+    app["cmd_sock"] = cmd_sock
     print(f"[teleop] listening on http://{SERVER_HOST}:{SERVER_PORT}")
 
 
@@ -166,6 +182,7 @@ async def on_shutdown(app: web.Application) -> None:
         await app["zmq_task"]
     except asyncio.CancelledError:
         pass
+    app["cmd_sock"].close()
 
 
 def main() -> None:

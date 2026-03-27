@@ -2,6 +2,7 @@
 
 const video = document.getElementById('video');
 const statusEl = document.getElementById('status');
+let activeWs = null;
 
 function setStatus(msg) {
   statusEl.textContent = msg;
@@ -13,6 +14,7 @@ function connect() {
   setStatus(`Connecting to ${wsUrl}…`);
 
   const ws = new WebSocket(wsUrl);
+  activeWs = ws;
   let pc = null;
 
   ws.onopen = () => setStatus('WebSocket connected, waiting for offer…');
@@ -51,6 +53,7 @@ function connect() {
   ws.onclose = () => {
     setStatus('Disconnected. Reconnecting in 2s…');
     if (pc) { pc.close(); pc = null; }
+    activeWs = null;
     setTimeout(connect, 2000);
   };
 
@@ -60,3 +63,21 @@ function connect() {
 }
 
 connect();
+
+// WASD teleop
+const keys = new Set();
+document.addEventListener('keydown', e => keys.add(e.key));
+document.addEventListener('keyup',   e => keys.delete(e.key));
+
+setInterval(() => {
+  let dx = 0, dy = 0;
+  if (keys.has('w')) dx += 1;
+  if (keys.has('s')) dx -= 1;
+  if (keys.has('a')) dy += 1;
+  if (keys.has('d')) dy -= 1;
+  if (dx !== 0 || dy !== 0) {
+    if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+      activeWs.send(JSON.stringify({ type: 'move', dx, dy }));
+    }
+  }
+}, 33);
