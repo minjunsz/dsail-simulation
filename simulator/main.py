@@ -16,7 +16,7 @@ from io import BytesIO
 # SimulationApp MUST be created before any omni.* imports
 from isaacsim import SimulationApp
 
-simulation_app = SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
+simulation_app = SimulationApp({"headless": True, "renderer": "RasterizationLighting"})
 
 import numpy as np
 import zmq
