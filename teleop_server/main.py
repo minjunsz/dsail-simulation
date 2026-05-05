@@ -148,7 +148,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             elif data["type"] == "move":
                 try:
                     cmd_sock.send_json(
-                        {"dx": data["dx"], "dy": data["dy"]},
+                        {"dx": data["dx"], "dy": data["dy"], "dz": data.get("dz", 0)},
                         zmq.NOBLOCK,
                     )
                 except zmq.Again:

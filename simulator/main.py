@@ -9,10 +9,12 @@ Run:
 """
 
 import argparse
+import math
 import struct
 import time
 from io import BytesIO
 
+import torch
 import zmq
 from PIL import Image
 
@@ -21,6 +23,20 @@ import genesis as gs
 TARGET_FPS = 30
 CAM_RES = (1280, 720)
 MOVE_SPEED = 0.05
+ROT_SPEED = 0.05
+
+
+def quat_mult(q1, q2):
+    w1, x1, y1, z1 = q1[0], q1[1], q1[2], q1[3]
+    w2, x2, y2, z2 = q2[0], q2[1], q2[2], q2[3]
+    return torch.stack(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
 
 
 def main():
@@ -40,11 +56,14 @@ def main():
     scene = gs.Scene(show_viewer=False)
     scene.add_entity(gs.morphs.Plane())
     box = scene.add_entity(gs.morphs.Box(size=(0.3, 0.3, 0.3), pos=(0.0, 0.0, 0.5)))
-    cam = scene.add_camera(
-        res=CAM_RES,
-        pos=(3.5, 0.0, 2.5),
-        lookat=(0.0, 0.0, 0.5),
-        fov=30,
+    cam = scene.add_sensor(
+        gs.sensors.RasterizerCameraOptions(
+            res=CAM_RES,
+            pos=(0.0, 0.2, 3),
+            lookat=(0.0, 0.0, 0.0),
+            fov=30,
+            entity_idx=box.idx,
+        )
     )
     scene.build()
 
@@ -72,14 +91,23 @@ def main():
             pos[0] += msg["dx"] * MOVE_SPEED
             pos[1] += msg["dy"] * MOVE_SPEED
             box.set_pos(pos)
+            dz = msg.get("dz", 0)
+            if dz != 0:
+                quat = box.get_quat()
+                half = math.cos(ROT_SPEED * dz / 2)
+                sin_half = math.sin(ROT_SPEED * dz / 2)
+                qz = torch.tensor([half, 0.0, 0.0, sin_half], device=quat.device)
+                quat = quat_mult(qz, quat)
+                norm = torch.norm(quat)
+                if norm > 0:
+                    quat = quat / norm
+                box.set_quat(quat)
         except zmq.Again:
             pass  # 명령 없으면 현 위치 유지
 
         # 2. physics step
         scene.step()
-        rgb, *_ = (
-            cam.render()
-        )  # returns (rgb, depth, seg, normal); rgb is np.ndarray (H, W, 3) uint8
+        rgb = cam.read().rgb.cpu().numpy()
 
         # JPEG compress
         buf = BytesIO()

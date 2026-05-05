@@ -1,0 +1,3 @@
+- use `uv` command to run processes and to install packages
+- before install packages, write requirements.txt, and run `uv pip install -r requirements.txt`
+- all project logs are written in `project_design` folder

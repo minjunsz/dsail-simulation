@@ -70,14 +70,16 @@ document.addEventListener('keydown', e => keys.add(e.key));
 document.addEventListener('keyup',   e => keys.delete(e.key));
 
 setInterval(() => {
-  let dx = 0, dy = 0;
+  let dx = 0, dy = 0, dz = 0;
   if (keys.has('w')) dx += 1;
   if (keys.has('s')) dx -= 1;
   if (keys.has('a')) dy += 1;
   if (keys.has('d')) dy -= 1;
-  if (dx !== 0 || dy !== 0) {
+  if (keys.has('q')) dz += 1;
+  if (keys.has('e')) dz -= 1;
+  if (dx !== 0 || dy !== 0 || dz !== 0) {
     if (activeWs && activeWs.readyState === WebSocket.OPEN) {
-      activeWs.send(JSON.stringify({ type: 'move', dx, dy }));
+      activeWs.send(JSON.stringify({ type: 'move', dx, dy, dz }));
     }
   }
 }, 33);
