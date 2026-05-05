@@ -177,7 +177,7 @@ async def on_startup(app: web.Application) -> None:
     app["frame_store"] = store
     app["zmq_task"] = asyncio.create_task(zmq_receiver(store, simulator_addr))
 
-    cmd_ctx = zmq.asyncio.Context()
+    cmd_ctx = zmq.Context()
     cmd_sock = cmd_ctx.socket(zmq.PUSH)
     cmd_sock.setsockopt(zmq.SNDHWM, 1)
     cmd_sock.connect(cmd_addr)
