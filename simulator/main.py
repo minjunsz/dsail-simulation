@@ -8,6 +8,7 @@ Run:
     python -m simulator.main
 """
 
+import argparse
 import struct
 import time
 from io import BytesIO
@@ -17,22 +18,28 @@ from PIL import Image
 
 import genesis as gs
 
-PUBLISH_ADDR = "tcp://*:5555"
-CMD_ADDR = "tcp://*:5556"
 TARGET_FPS = 30
 CAM_RES = (1280, 720)
 MOVE_SPEED = 0.05
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pub-port", type=int, default=5555, help="ZMQ PUB port")
+    parser.add_argument(
+        "--cmd-port", type=int, default=5556, help="ZMQ PULL (command) port"
+    )
+    args = parser.parse_args()
+
+    publish_addr = f"tcp://*:{args.pub_port}"
+    cmd_addr = f"tcp://*:{args.cmd_port}"
+
     # --- Genesis setup ---
     gs.init(backend=gs.gpu)
 
     scene = gs.Scene(show_viewer=False)
     scene.add_entity(gs.morphs.Plane())
-    box = scene.add_entity(
-        gs.morphs.Box(size=(0.3, 0.3, 0.3), pos=(0.0, 0.0, 0.5))
-    )
+    box = scene.add_entity(gs.morphs.Box(size=(0.3, 0.3, 0.3), pos=(0.0, 0.0, 0.5)))
     cam = scene.add_camera(
         res=CAM_RES,
         pos=(3.5, 0.0, 2.5),
@@ -45,13 +52,13 @@ def main():
     ctx = zmq.Context()
     sock = ctx.socket(zmq.PUB)
     sock.setsockopt(zmq.SNDHWM, 2)  # drop old frames; always send latest
-    sock.bind(PUBLISH_ADDR)
-    print(f"[simulator] publishing frames on {PUBLISH_ADDR}")
+    sock.bind(publish_addr)
+    print(f"[simulator] publishing frames on {publish_addr}")
 
     cmd_sock = ctx.socket(zmq.PULL)
     cmd_sock.setsockopt(zmq.RCVHWM, 1)
-    cmd_sock.bind(CMD_ADDR)
-    print(f"[simulator] receiving commands on {CMD_ADDR}")
+    cmd_sock.bind(cmd_addr)
+    print(f"[simulator] receiving commands on {cmd_addr}")
 
     interval = 1.0 / TARGET_FPS
 
@@ -70,7 +77,9 @@ def main():
 
         # 2. physics step
         scene.step()
-        rgb, *_ = cam.render()  # returns (rgb, depth, seg, normal); rgb is np.ndarray (H, W, 3) uint8
+        rgb, *_ = (
+            cam.render()
+        )  # returns (rgb, depth, seg, normal); rgb is np.ndarray (H, W, 3) uint8
 
         # JPEG compress
         buf = BytesIO()
