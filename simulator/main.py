@@ -82,15 +82,18 @@ def main():
         while simulation_app.is_running():
             t0 = time.perf_counter()
 
-            # 1. 명령 polling
-            try:
-                msg = cmd_sock.recv_json(zmq.NOBLOCK)
+            # 1. 명령 polling — 큐에 쌓인 명령을 전부 소진하고 마지막 것만 적용
+            latest_cmd = None
+            while True:
+                try:
+                    latest_cmd = cmd_sock.recv_json(zmq.NOBLOCK)
+                except zmq.Again:
+                    break
+            if latest_cmd is not None:
                 position, orientation = box.get_world_pose()
-                position[0] += msg["dx"] * MOVE_SPEED
-                position[1] += msg["dy"] * MOVE_SPEED
+                position[0] += latest_cmd["dx"] * MOVE_SPEED
+                position[1] += latest_cmd["dy"] * MOVE_SPEED
                 box.set_world_pose(position=position, orientation=orientation)
-            except zmq.Again:
-                pass  # 명령 없으면 현 위치 유지
 
             # 2. Physics + render step
             world.step(render=True)

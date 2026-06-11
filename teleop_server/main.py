@@ -157,6 +157,23 @@ async def client_js_handler(request: web.Request) -> web.Response:
 # WebSocket: binary VP8 video (server→client) + JSON commands (client→server)
 # ---------------------------------------------------------------------------
 
+async def cmd_forwarder(app: web.Application) -> None:
+    """최신 명령 상태를 고정 주기로 ZMQ에 전송."""
+    cmd_sock = app["cmd_sock"]
+    interval = 1.0 / TARGET_FPS
+    try:
+        while True:
+            cmd = app["latest_cmd"]
+            if cmd["dx"] != 0 or cmd["dy"] != 0:
+                try:
+                    await cmd_sock.send_json({"dx": cmd["dx"], "dy": cmd["dy"]}, zmq.NOBLOCK)
+                except zmq.Again:
+                    pass
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        pass
+
+
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     import aiohttp
 
@@ -165,22 +182,19 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     request.app["ws_clients"].add(ws)
     print("[ws] client connected")
 
-    cmd_sock = request.app["cmd_sock"]
-
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             data = json.loads(msg.data)
             if data.get("type") == "move":
-                try:
-                    cmd_sock.send_json(
-                        {"dx": data["dx"], "dy": data["dy"]},
-                        zmq.NOBLOCK,
-                    )
-                except zmq.Again:
-                    pass
+                # ZMQ로 직접 전달하지 않고 상태만 갱신
+                request.app["latest_cmd"]["dx"] = data["dx"]
+                request.app["latest_cmd"]["dy"] = data["dy"]
         elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
             break
 
+    # 클라이언트 연결 해제 시 즉시 정지
+    request.app["latest_cmd"]["dx"] = 0
+    request.app["latest_cmd"]["dy"] = 0
     request.app["ws_clients"].discard(ws)
     print("[ws] client disconnected")
     return ws
@@ -192,6 +206,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
 async def on_startup(app: web.Application) -> None:
     app["ws_clients"] = set()
+    app["latest_cmd"] = {"dx": 0, "dy": 0}
 
     store = FrameStore()
     app["zmq_task"] = asyncio.create_task(zmq_receiver(store))
@@ -202,11 +217,12 @@ async def on_startup(app: web.Application) -> None:
     cmd_sock.setsockopt(zmq.SNDHWM, 1)
     cmd_sock.connect(CMD_ADDR)
     app["cmd_sock"] = cmd_sock
+    app["cmd_task"] = asyncio.create_task(cmd_forwarder(app))
     print(f"[teleop] listening on http://{SERVER_HOST}:{SERVER_PORT}")
 
 
 async def on_shutdown(app: web.Application) -> None:
-    for key in ("zmq_task", "encoder_task"):
+    for key in ("zmq_task", "encoder_task", "cmd_task"):
         app[key].cancel()
         try:
             await app[key]
