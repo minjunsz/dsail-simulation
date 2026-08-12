@@ -71,7 +71,8 @@ class SimulatorVideoTrack(VideoStreamTrack):
 async def zmq_receiver(store: LatestFrame, simulator_addr: str) -> None:
     ctx = zmq.asyncio.Context()
     sock = ctx.socket(zmq.SUB)
-    sock.setsockopt(zmq.RCVHWM, 2)
+    # Never decode stale simulator frames when rendering/encoding falls behind.
+    sock.setsockopt(zmq.CONFLATE, 1)
     sock.setsockopt_string(zmq.SUBSCRIBE, "")
     sock.connect(simulator_addr)
     print(f"[teleop] subscribed to simulator at {simulator_addr}")
@@ -96,7 +97,10 @@ async def index_handler(request: web.Request) -> web.Response:
 
 
 async def client_js_handler(request: web.Request) -> web.Response:
-    return web.FileResponse(STATIC_DIR / "client.js")
+    return web.FileResponse(
+        STATIC_DIR / "client.js",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +160,10 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
             break
 
+    try:
+        cmd_sock.send_json({"vx": 0, "vy": 0, "wz": 0}, zmq.NOBLOCK)
+    except zmq.Again:
+        pass
     await pc.close()
     print("[signaling] client disconnected")
     return ws
@@ -179,7 +187,9 @@ async def on_startup(app: web.Application) -> None:
 
     cmd_ctx = zmq.Context()
     cmd_sock = cmd_ctx.socket(zmq.PUSH)
-    cmd_sock.setsockopt(zmq.SNDHWM, 1)
+    # Keyboard input represents current state, not an event stream. Keep only
+    # the newest state so key-up cannot sit behind seconds of key-down packets.
+    cmd_sock.setsockopt(zmq.CONFLATE, 1)
     cmd_sock.connect(cmd_addr)
     app["cmd_sock"] = cmd_sock
     print(f"[teleop] listening on http://{server_host}:{server_port}")

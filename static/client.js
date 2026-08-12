@@ -17,7 +17,10 @@ function connect() {
   activeWs = ws;
   let pc = null;
 
-  ws.onopen = () => setStatus('WebSocket connected, waiting for offer…');
+  ws.onopen = () => {
+    lastMovePayload = null;
+    setStatus('WebSocket connected, waiting for offer…');
+  };
 
   ws.onmessage = async (event) => {
     const data = JSON.parse(event.data);
@@ -66,8 +69,15 @@ connect();
 
 // WASD teleop
 const keys = new Set();
-document.addEventListener('keydown', e => keys.add(e.key));
-document.addEventListener('keyup',   e => keys.delete(e.key));
+let lastMovePayload = null;
+let lastMoveSentAt = 0;
+const MOVE_HEARTBEAT_MS = 100;
+document.addEventListener('keydown', e => keys.add(e.key.toLowerCase()));
+document.addEventListener('keyup',   e => keys.delete(e.key.toLowerCase()));
+window.addEventListener('blur', () => keys.clear());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) keys.clear();
+});
 
 setInterval(() => {
   let vx = 0, vy = 0, wz = 0;
@@ -78,6 +88,12 @@ setInterval(() => {
   if (keys.has('q')) wz += 1;
   if (keys.has('e')) wz -= 1;
   if (activeWs && activeWs.readyState === WebSocket.OPEN) {
-    activeWs.send(JSON.stringify({ type: 'move', vx, vy, wz }));
+    const payload = JSON.stringify({ type: 'move', vx, vy, wz });
+    const now = performance.now();
+    if (payload !== lastMovePayload || now - lastMoveSentAt >= MOVE_HEARTBEAT_MS) {
+      activeWs.send(payload);
+      lastMovePayload = payload;
+      lastMoveSentAt = now;
+    }
   }
 }, 33);
