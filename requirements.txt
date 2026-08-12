@@ -5,3 +5,4 @@ aiortc
 av
 Pillow
 numpy
+trimesh

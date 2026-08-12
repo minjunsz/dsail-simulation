@@ -21,6 +21,8 @@ from io import BytesIO
 
 import torch
 import torch.nn as nn
+import numpy as np
+import trimesh
 import zmq
 from PIL import Image
 
@@ -37,6 +39,73 @@ STABILIZE_STEPS = 100
 _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 PLANE_URDF  = os.path.join(_ASSETS_DIR, "urdf/plane/plane.urdf")
 GO2_URDF    = os.path.join(_ASSETS_DIR, "urdf/go2/urdf/go2.urdf")
+DSAIL_MESH  = os.path.join(_ASSETS_DIR, "dsail_mesh.ply")
+DSAIL_SCALE = 0.85
+DSAIL_Z_OFFSET = 0.0
+ROBOT_SCENE_CLEARANCE = 0.75
+ROBOT_INIT_YAW = np.pi  # Spawn on +X while facing inward toward the DSAIL scene.
+CAMERA_POS_REL = np.array((-2.5, 0.0, 1.08), dtype=np.float32)
+CAMERA_LOOKAT_REL = np.array((0.0, 0.0, -0.02), dtype=np.float32)
+CAMERA_UP_REL = np.array((0.0, 0.0, 1.0), dtype=np.float32)
+CAMERA_SMOOTHING = 0.85
+
+
+def build_spatial_convex_proxies(mesh, cell_size, half_thickness):
+    """Approximate a scanned surface with local convex hulls.
+
+    CoACD on the complete room shell creates hulls across its free interior.
+    Grouping triangles into small spatial cells first keeps every hull local;
+    a small two-sided extrusion gives thin walls and floors collision volume.
+    """
+    triangles = mesh.triangles
+    normals = mesh.face_normals
+    cell_ids = np.floor((mesh.triangles_center - mesh.bounds[0]) / cell_size).astype(np.int32)
+    _, inverse = np.unique(cell_ids, axis=0, return_inverse=True)
+
+    proxies = []
+    for cell_idx in range(inverse.max() + 1):
+        mask = inverse == cell_idx
+        cell_vertices = triangles[mask].reshape(-1, 3)
+        offsets = np.repeat(normals[mask], 3, axis=0) * half_thickness
+        points = np.concatenate((cell_vertices + offsets, cell_vertices - offsets))
+        proxies.append(trimesh.convex.convex_hull(points))
+
+    return tuple(proxies)
+
+
+def update_tps_camera(cam, robot, state):
+    """Follow the robot using only its smoothed position and yaw.
+
+    Attaching directly to base_link also transfers the quadruped's roll, pitch,
+    and body bounce to the camera.  A TPS camera should follow its heading while
+    remaining level with the world, so project the base orientation onto XY.
+    """
+    base_pos = robot.base_link.get_pos().detach().cpu().numpy().reshape(3)
+    base_quat = robot.base_link.get_quat().detach().cpu().numpy().reshape(4)
+    base_rotation = gs.utils.geom.quat_to_R(base_quat)
+    target_yaw = float(np.arctan2(base_rotation[1, 0], base_rotation[0, 0]))
+
+    if not state:
+        state["anchor"] = base_pos.copy()
+        state["yaw"] = target_yaw
+    else:
+        alpha = CAMERA_SMOOTHING
+        state["anchor"] = alpha * state["anchor"] + (1.0 - alpha) * base_pos
+        yaw_delta = np.arctan2(
+            np.sin(target_yaw - state["yaw"]),
+            np.cos(target_yaw - state["yaw"]),
+        )
+        state["yaw"] += (1.0 - alpha) * yaw_delta
+
+    cos_yaw = np.cos(state["yaw"])
+    sin_yaw = np.sin(state["yaw"])
+    yaw_rotation = np.array(
+        ((cos_yaw, -sin_yaw, 0.0), (sin_yaw, cos_yaw, 0.0), (0.0, 0.0, 1.0)),
+        dtype=np.float32,
+    )
+    camera_pos = state["anchor"] + yaw_rotation @ CAMERA_POS_REL
+    camera_lookat = state["anchor"] + yaw_rotation @ CAMERA_LOOKAT_REL
+    cam.set_pose(pos=camera_pos, lookat=camera_lookat, up=CAMERA_UP_REL)
 
 
 def load_actor(checkpoint_path: str, num_obs: int, num_actions: int, device) -> nn.Module:
@@ -91,7 +160,24 @@ def main():
     parser.add_argument("--pub-port",   type=int, default=5555)
     parser.add_argument("--cmd-port",   type=int, default=5556)
     parser.add_argument("--checkpoint", type=str, default="logs/go2-omni/model_1500.pt")
+    parser.add_argument(
+        "--collision-cell-size",
+        type=float,
+        default=0.5,
+        help="Spatial convex decomposition cell size in meters (smaller is more accurate).",
+    )
+    parser.add_argument(
+        "--collision-half-thickness",
+        type=float,
+        default=0.01,
+        help="One-sided collision proxy extrusion in meters.",
+    )
     args = parser.parse_args()
+
+    if args.collision_cell_size <= 0.0:
+        parser.error("--collision-cell-size must be positive")
+    if args.collision_half_thickness <= 0.0:
+        parser.error("--collision-half-thickness must be positive")
 
     publish_addr = f"tcp://*:{args.pub_port}"
     cmd_addr     = f"tcp://*:{args.cmd_port}"
@@ -107,7 +193,7 @@ def main():
     env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg = pickle.load(open(cfgs_path, "rb"))
 
     # --- Genesis setup (n_envs=0 → single-env rasterizer, no batch renderer) ---
-    gs.init(backend=gs.cpu)
+    gs.init(backend=gs.gpu)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=CONTROL_DT, substeps=2),
@@ -119,24 +205,80 @@ def main():
     )
 
     scene.add_entity(gs.morphs.URDF(file=PLANE_URDF, fixed=True))
+    # Genesis 0.4.x does not accept PLY paths directly, but MeshSet accepts an
+    # in-memory trimesh while preserving the PLY's vertex colors.
+    dsail_trimesh = trimesh.load(DSAIL_MESH, force="mesh", process=False)
+    dsail_trimesh.apply_scale(DSAIL_SCALE)
+    dsail_trimesh.apply_translation((0.0, 0.0, DSAIL_Z_OFFSET))
+    dsail_collision_trimesh = dsail_trimesh.simplify_quadric_decimation(
+        face_count=5_000,
+        aggression=5,
+    )
+    dsail_collision_parts = build_spatial_convex_proxies(
+        dsail_collision_trimesh,
+        cell_size=args.collision_cell_size,
+        half_thickness=args.collision_half_thickness,
+    )
+    print(f"[simulator] DSAIL collision proxies: {len(dsail_collision_parts)} convex hulls")
+    print(f"[simulator] DSAIL bounds: {dsail_trimesh.bounds.tolist()}")
+    # Keep the full-resolution scan for rendering, separate from physics so the
+    # GPU never builds collision data from the 1.5M-face source mesh.
+    scene.add_entity(
+        gs.morphs.MeshSet(
+            files=(dsail_trimesh,),
+            fixed=True,
+            collision=False,
+            decimate=False,
+            convexify=False,
+        )
+    )
+    scene.add_entity(
+        gs.morphs.MeshSet(
+            files=dsail_collision_parts,
+            fixed=True,
+            visualization=False,
+            collision=True,
+            # Every input part is already a local convex hull.
+            convexify=True,
+            decimate=False,
+        )
+    )
+    robot_init_pos = (
+        float(dsail_trimesh.bounds[1, 0] + ROBOT_SCENE_CLEARANCE),
+        0.0,
+        float(env_cfg["base_init_pos"][2]),
+    )
+    robot_init_quat = (
+        float(np.cos(ROBOT_INIT_YAW / 2.0)),
+        0.0,
+        0.0,
+        float(np.sin(ROBOT_INIT_YAW / 2.0)),
+    )
+    print(f"[simulator] Go2 initial position: {robot_init_pos}")
     robot = scene.add_entity(
         gs.morphs.URDF(
             file=GO2_URDF,
-            pos=env_cfg["base_init_pos"],
-            quat=env_cfg["base_init_quat"],
+            pos=robot_init_pos,
+            quat=robot_init_quat,
         )
     )
 
+    init_cos_yaw = np.cos(ROBOT_INIT_YAW)
+    init_sin_yaw = np.sin(ROBOT_INIT_YAW)
+    init_yaw_rotation = np.array(
+        ((init_cos_yaw, -init_sin_yaw, 0.0), (init_sin_yaw, init_cos_yaw, 0.0), (0.0, 0.0, 1.0)),
+        dtype=np.float32,
+    )
     cam = scene.add_camera(
         res=CAM_RES,
-        pos=(2.5, 0.0, 1.5),
-        lookat=(0.0, 0.0, 0.4),
+        pos=tuple(np.asarray(robot_init_pos) + init_yaw_rotation @ CAMERA_POS_REL),
+        lookat=tuple(np.asarray(robot_init_pos) + init_yaw_rotation @ CAMERA_LOOKAT_REL),
         fov=45,
         GUI=False,
     )
-    cam.follow_entity(robot, fix_orientation=True)
 
     scene.build()   # no n_envs → rasterizer path, cam.render() returns (H, W, 3)
+    camera_state = {}
 
     # --- DOF setup ---
     joint_names     = env_cfg["joint_names"]
@@ -159,8 +301,8 @@ def main():
         dtype=gs.tc_float, device=gs.device,
     )
     robot.set_qpos(torch.cat([
-        torch.tensor(env_cfg["base_init_pos"],  dtype=gs.tc_float, device=gs.device),
-        torch.tensor(env_cfg["base_init_quat"], dtype=gs.tc_float, device=gs.device),
+        torch.tensor(robot_init_pos,             dtype=gs.tc_float, device=gs.device),
+        torch.tensor(robot_init_quat,             dtype=gs.tc_float, device=gs.device),
         init_dof_flat,
     ]))
 
@@ -233,6 +375,7 @@ def main():
 
         # 3. Physics step + render
         scene.step()
+        update_tps_camera(cam, robot, camera_state)
         rgb_arr, _, _, _ = cam.render()   # (H, W, 3) numpy array — rasterizer, no batch dim
 
         # Update 1-step latency buffers
