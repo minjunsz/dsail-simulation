@@ -27,11 +27,49 @@
       font-size: 13px;
       color: #aaa;
     }
+    #status.unavailable {
+      font-size: 24px;
+      color: #ff6b6b;
+    }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
   <div id="status">Connecting…</div>
   <script src="/client.js"></script>
+  <script>
+    // client.js owns signaling; this page-level observer handles server slot
+    // messages without adding another client asset to the multi-user change.
+    (() => {
+      const watchedSockets = new WeakSet();
+
+      function watchRobotSlot(ws) {
+        if (!ws || watchedSockets.has(ws)) return;
+        watchedSockets.add(ws);
+        ws.addEventListener('message', event => {
+          const data = JSON.parse(event.data);
+          if (data.type === 'assigned') {
+            document.title = `Genesis Teleop — Robot ${data.robot_id}`;
+          } else if (data.type === 'no_robot') {
+            keys.clear();
+            video.pause();
+            video.srcObject = null;
+            video.hidden = true;
+            statusEl.classList.add('unavailable');
+            setStatus(data.message || 'No robot left');
+          }
+        });
+      }
+
+      // Observe the socket created by the initial connect() call, then wrap
+      // connect so any later automatic retry receives the same handling.
+      watchRobotSlot(activeWs);
+      const originalConnect = connect;
+      connect = function connectAndWatchRobotSlot() {
+        originalConnect();
+        watchRobotSlot(activeWs);
+      };
+    })();
+  </script>
 </body>
 </html>
