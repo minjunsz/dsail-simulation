@@ -72,7 +72,13 @@ const keys = new Set();
 let lastMovePayload = null;
 let lastMoveSentAt = 0;
 const MOVE_HEARTBEAT_MS = 100;
-document.addEventListener('keydown', e => keys.add(e.key.toLowerCase()));
+document.addEventListener('keydown', e => {
+  const key = e.key.toLowerCase();
+  keys.add(key);
+  if (key === 'p' && !e.repeat && activeWs && activeWs.readyState === WebSocket.OPEN) {
+    activeWs.send(JSON.stringify({ type: 'print_pose' }));
+  }
+});
 document.addEventListener('keyup',   e => keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
 document.addEventListener('visibilitychange', () => {

@@ -6,6 +6,7 @@ JPEG-compressed frames over ZeroMQ PUB socket.
 
 Commands (ZMQ PULL) expect JSON from teleop_server:
 {"robot_id": 1|2, "vx": ±1, "vy": ±1, "wz": ±1}
+or, for the 'p' pose-print key: {"robot_id": 1|2, "type": "print_pose"}
 
 Run:
     CUDA_VISIBLE_DEVICES=3 EGL_DEVICE_ID=3 python -m simulator.main
@@ -22,6 +23,8 @@ import numpy as np
 import trimesh
 import zmq
 from PIL import Image
+from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation
 
 import genesis as gs
 from genesis.utils.geom import transform_by_quat, inv_quat
@@ -37,18 +40,87 @@ _ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 PLANE_URDF  = os.path.join(_ASSETS_DIR, "urdf/plane/plane.urdf")
 G1_URDF     = os.path.join(_ASSETS_DIR, "urdf/g1/g1_12dof.urdf")
 G1_POLICY   = os.path.join(_ASSETS_DIR, "checkpoints/g1-locomotion/motion.pt")
-DSAIL_MESH  = os.path.join(_ASSETS_DIR, "dsail_mesh.ply")
-DSAIL_SCALE = 0.5
-DSAIL_Z_OFFSET = -0.05
-ROBOT_SCENE_CLEARANCE = 0.75
-ROBOT_INIT_YAW = np.pi  # Spawn on +X while facing inward toward the DSAIL scene.
-CAMERA_POS_REL = np.array((-3.0, 0.0, 1.15), dtype=np.float32)
+DSAIL_MESH  = os.path.join(_ASSETS_DIR, "301_1F_ground_aligned.ply")
+# G1_POLICY was trained on the full-size G1's own dynamics (leg length,
+# torque-to-mass ratio, gait timing); shrinking the ROBOT to fit the scene
+# breaks that (it fell and couldn't recover) even though scale keeps mass and
+# inertia consistent. Growing the SCENE instead keeps the robot untouched --
+# scale the DSAIL mesh up and the collision/SDF tuning below with it so the
+# proxy count and total SDF cells stay the same as at scale 1.
+DSAIL_SCALE = 2.0
+DSAIL_Z_OFFSET = 0.0
+# Safety-net ground plane, well below the DSAIL floor so it never z-fights or
+# shows through the reconstructed floor mesh -- the DSAIL collision proxies
+# are the real floor; this only catches a robot that somehow clips through.
+GROUND_PLANE_Z_OFFSET = -1.0
+ROBOT_SCALE = 1.0
+CAMERA_POS_REL = np.array((-3.0, 0.0, 1.15), dtype=np.float32) * ROBOT_SCALE
 CAMERA_LOOKAT_REL = np.array((0.0, 0.0, 0.0), dtype=np.float32)
 CAMERA_UP_REL = np.array((0.0, 0.0, 1.0), dtype=np.float32)
 CAMERA_SMOOTHING = 0.85
 ROBOT_COUNT = 2
-ROBOT_SPAWN_SEPARATION = 1.5
 FRAME_HEADER = struct.Struct("<BQ")  # one-byte robot id + timestamp (ms)
+# (pos_xyz, yaw_deg), found via the `p` teleop key -- one robot per poster below.
+ROBOT_INIT_POSES = [
+    ((6.388, -1.726, 0.746), 158.7),
+    ((5.503, -2.498, 0.740), 164.4),
+]
+
+POSTER_TEXTURE = os.path.join(_ASSETS_DIR, "textures/example_poster.png")
+G1_STANDING_HEIGHT = 1.3  # pelvis (~0.77m) + torso/head, see project_design/04_g1_humanoid_locomotion.md
+G1_KNEE_HEIGHT = 0.33  # forward-kinematics'd from g1_12dof.urdf's leg joint origins at zero pose
+POSTER_SIZE_SCALE = 2.0
+POSTER_HEIGHT = G1_STANDING_HEIGHT * (2.0 / 3.0) * POSTER_SIZE_SCALE
+POSTER_FLOAT_HEIGHT = G1_KNEE_HEIGHT  # bottom edge floats up to knee height, not resting on the floor
+# (pos_xy, facing_yaw_deg). The raw `p`-key readings (roughly (3.950,-0.387)
+# @ -27.0deg and (3.340,-1.545) @ -18.1deg) were close but not quite in line
+# or parallel -- these are that pair snapped onto their common line (still
+# through its midpoint), sharing one yaw (perpendicular to that line), and
+# spaced by exactly poster width + a 0.2m gap, so they sit flush and level.
+POSTER_INIT_POSES = [
+    ((3.977, -0.336), -27.8),
+    ((3.313, -1.596), -27.8),
+]
+
+
+def decimate_visual_mesh(mesh, face_count):
+    """Simplify a colored mesh for rendering, re-attaching vertex colors.
+
+    trimesh's quadric decimation drops vertex colors entirely (it has no
+    color-aware error metric), so a naive decimate+render would turn the
+    scan grey. Nearest-neighbor color transfer from the source mesh is cheap
+    (a few seconds even for millions of points) and visually indistinguishable
+    at this vertex density.
+    """
+    if len(mesh.faces) <= face_count:
+        return mesh
+    decimated = mesh.simplify_quadric_decimation(face_count=face_count)
+    _, nearest = cKDTree(mesh.vertices).query(decimated.vertices, k=1)
+    decimated.visual.vertex_colors = mesh.visual.vertex_colors[nearest]
+    return decimated
+
+
+def yaw_to_quat(yaw_rad):
+    """Genesis (w,x,y,z) quat for a rotation of yaw_rad about world +z."""
+    return (float(np.cos(yaw_rad / 2.0)), 0.0, 0.0, float(np.sin(yaw_rad / 2.0)))
+
+
+def upright_plane_quat(normal_xy):
+    """Genesis (w,x,y,z) quat for a vertical gs.morphs.Plane facing normal_xy.
+
+    A default Plane lies flat (normal +z, local x/y axes = its width/height).
+    Building the rotation from explicit basis vectors -- a horizontal width
+    axis, world-up as the height axis, and the given horizontal normal --
+    keeps the poster upright and right-side-up regardless of which way the
+    scan's corridor happens to run in x/y.
+    """
+    normal = np.array([normal_xy[0], normal_xy[1], 0.0])
+    normal /= np.linalg.norm(normal)
+    up = np.array([0.0, 0.0, 1.0])
+    width_dir = np.cross(up, normal)  # already unit length: up, normal orthonormal
+    rotation = np.column_stack([width_dir, up, normal])
+    qx, qy, qz, qw = Rotation.from_matrix(rotation).as_quat()
+    return (float(qw), float(qx), float(qy), float(qz))
 
 
 def build_spatial_convex_proxies(mesh, cell_size, half_thickness):
@@ -72,6 +144,34 @@ def build_spatial_convex_proxies(mesh, cell_size, half_thickness):
         proxies.append(trimesh.convex.convex_hull(points))
 
     return tuple(proxies)
+
+
+def spawn_column_is_clear(pos_xy, proxies, z_range=(0.05, 1.8), n_samples=20):
+    """Check that a vertical column at pos_xy doesn't intersect any collision proxy.
+
+    A coarse --collision-cell-size merges every triangle in a cell into one
+    convex hull; being convex, that hull can bulge across a hallway's open
+    width between two grouped wall/floor sections even though the real scan
+    has nothing there. A robot spawned inside it gets an instant, violent
+    de-penetration and falls over before it ever takes a step -- with no
+    error, so this is otherwise silent. Catch it at scene-build time instead.
+    """
+    test_pts = np.array([[pos_xy[0], pos_xy[1], z] for z in np.linspace(*z_range, n_samples)])
+    for proxy in proxies:
+        if np.any(test_pts.min(axis=0) > proxy.bounds[1]) or np.any(test_pts.max(axis=0) < proxy.bounds[0]):
+            continue
+        if proxy.contains(test_pts).any():
+            return False
+    return True
+
+
+def get_robot_pose(robot):
+    """Return (pos_xyz, yaw_rad) of a robot's base link, world frame."""
+    pos = robot.base_link.get_pos().detach().cpu().numpy().reshape(3)
+    quat = robot.base_link.get_quat().detach().cpu().numpy().reshape(4)
+    rotation = gs.utils.geom.quat_to_R(quat)
+    yaw = float(np.arctan2(rotation[1, 0], rotation[0, 0]))
+    return pos, yaw
 
 
 def update_tps_camera(cam, robot, state):
@@ -150,7 +250,13 @@ def recv_latest_commands(sock, current_commands):
     A single conflated socket cannot be used here because a command for robot 2
     could replace robot 1's latest command. Draining the small shared queue and
     updating by robot id preserves independent current-state channels.
+
+    Also returns the set of (0-indexed) robots whose browser client pressed
+    'p' this tick -- teleop_server forwards it as {"robot_id":.., "type":
+    "print_pose"} over the same channel as move commands, since that's the
+    only path from the browser's keyboard (WASD) to this process.
     """
+    pose_print_robot_idxs = set()
     while True:
         try:
             latest = sock.recv_json(zmq.NOBLOCK)
@@ -164,6 +270,10 @@ def recv_latest_commands(sock, current_commands):
         if not 0 <= robot_idx < len(current_commands):
             continue
 
+        if latest.get("type") == "print_pose":
+            pose_print_robot_idxs.add(robot_idx)
+            continue
+
         current_commands[robot_idx] = torch.tensor(
             [
                 float(latest.get("vx", 0.0)) * 0.5,
@@ -174,7 +284,7 @@ def recv_latest_commands(sock, current_commands):
             device=gs.device,
         )
 
-    return current_commands
+    return current_commands, pose_print_robot_idxs
 
 
 def main():
@@ -185,14 +295,42 @@ def main():
     parser.add_argument(
         "--collision-cell-size",
         type=float,
-        default=0.5,
-        help="Spatial convex decomposition cell size in meters (smaller is more accurate).",
+        default=1.0 * DSAIL_SCALE,
+        help=(
+            "Spatial convex decomposition cell size in meters (smaller is more accurate, "
+            "but more geoms -- 0.5 at DSAIL_SCALE=1 gives ~1800 collision proxies on the "
+            "301_1F scan, which dominates both scene-build time and per-step broad-phase "
+            "cost). Scales with DSAIL_SCALE so proxy count stays roughly constant. Keep this "
+            "no larger than ~1x DSAIL_SCALE: since each cell's triangles get merged into one "
+            "convex hull, a coarser cell can bulge across a hallway's open width and clip a "
+            "robot spawned inside it (confirmed at 1.5x -- one robot spawned fine, the other "
+            "landed inside a hull that bridged across the corridor and fell over instantly)."
+        ),
+    )
+    parser.add_argument(
+        "--visual-face-count",
+        type=int,
+        default=500_000,
+        help="Decimate the rendered (colored) DSAIL mesh to at most this many faces (0 disables).",
     )
     parser.add_argument(
         "--collision-half-thickness",
         type=float,
-        default=0.01,
-        help="One-sided collision proxy extrusion in meters.",
+        default=0.01 * DSAIL_SCALE,
+        help="One-sided collision proxy extrusion in meters. Scales with DSAIL_SCALE.",
+    )
+    parser.add_argument(
+        "--sdf-cell-size",
+        type=float,
+        default=0.05 * DSAIL_SCALE,
+        help=(
+            "Rigid material SDF cell size for the DSAIL collision proxies. Genesis's "
+            "auto-clamp gives each proxy geom up to sdf_max_res^3 cells, summed over every "
+            "proxy; at the default --collision-cell-size that stays well under int32 range "
+            "and keeps the total SDF memory small, which matters for both scene-build time "
+            "and per-step lookup cost. Raise --collision-cell-size or this if you still hit "
+            "'SDF Gradient shape ... too large'. Scales with DSAIL_SCALE."
+        ),
     )
     args = parser.parse_args()
 
@@ -217,10 +355,15 @@ def main():
             enable_self_collision=False,
             max_collision_pairs=100,
         ),
+        vis_options=gs.options.VisOptions(
+            lights=[],  # drop the default directional "sun" light
+            ambient_light=(0.5, 0.5, 0.5),  # uniform, shadow-free illumination
+            shadow=False,
+        ),
         show_viewer=False,
     )
 
-    scene.add_entity(gs.morphs.URDF(file=PLANE_URDF, fixed=True))
+    scene.add_entity(gs.morphs.URDF(file=PLANE_URDF, fixed=True, pos=(0.0, 0.0, GROUND_PLANE_Z_OFFSET)))
     # Genesis 0.4.x does not accept PLY paths directly, but MeshSet accepts an
     # in-memory trimesh while preserving the PLY's vertex colors.
     dsail_trimesh = trimesh.load(DSAIL_MESH, force="mesh", process=False)
@@ -237,11 +380,20 @@ def main():
     )
     print(f"[simulator] DSAIL collision proxies: {len(dsail_collision_parts)} convex hulls")
     print(f"[simulator] DSAIL bounds: {dsail_trimesh.bounds.tolist()}")
-    # Keep the full-resolution scan for rendering, separate from physics so the
-    # GPU never builds collision data from the 1.5M-face source mesh.
+    # Collision uses its own decimated copy above; the render copy is kept
+    # separate so the GPU never builds collision data from it. It still needs
+    # its own decimation -- at native res (8.5M faces on 301_1F) the
+    # rasterizer redraws every triangle every frame regardless of `fixed`,
+    # which tanks FPS far more than a 500k-face mesh looks worse.
+    dsail_visual_trimesh = (
+        decimate_visual_mesh(dsail_trimesh, args.visual_face_count)
+        if args.visual_face_count > 0
+        else dsail_trimesh
+    )
+    print(f"[simulator] DSAIL visual mesh: {len(dsail_visual_trimesh.faces)} faces (from {len(dsail_trimesh.faces)})")
     scene.add_entity(
         gs.morphs.MeshSet(
-            files=(dsail_trimesh,),
+            files=(dsail_visual_trimesh,),
             fixed=True,
             collision=False,
             decimate=False,
@@ -257,52 +409,76 @@ def main():
             # Every input part is already a local convex hull.
             convexify=True,
             decimate=False,
-        )
+        ),
+        # Default sdf_cell_size=0.005 gives each of the ~1800 proxies up to
+        # sdf_max_res^3 SDF cells; summed across all of them that overflows
+        # int32 ("SDF Gradient shape ... too large"). A coarser cell size is
+        # plenty for these thin collision slabs.
+        material=gs.materials.Rigid(sdf_cell_size=args.sdf_cell_size),
     )
-    robot_init_x = float(dsail_trimesh.bounds[1, 0] + ROBOT_SCENE_CLEARANCE)
-    robot_init_positions = [
-        (
-            robot_init_x,
-            (robot_idx - (ROBOT_COUNT - 1) / 2.0) * ROBOT_SPAWN_SEPARATION,
-            0.8,
-        )
-        for robot_idx in range(ROBOT_COUNT)
-    ]
-    robot_init_quat = (
-        float(np.cos(ROBOT_INIT_YAW / 2.0)),
-        0.0,
-        0.0,
-        float(np.sin(ROBOT_INIT_YAW / 2.0)),
-    )
+    robot_init_positions = [pos for pos, _ in ROBOT_INIT_POSES]
+    robot_init_quats = [yaw_to_quat(np.radians(yaw_deg)) for _, yaw_deg in ROBOT_INIT_POSES]
     robots = []
-    for robot_id, robot_init_pos in enumerate(robot_init_positions, start=1):
+    for robot_id, (robot_init_pos, robot_init_quat) in enumerate(zip(robot_init_positions, robot_init_quats), start=1):
         print(f"[simulator] G1 #{robot_id} initial position: {robot_init_pos}")
+        if not spawn_column_is_clear(robot_init_pos[:2], dsail_collision_parts):
+            print(
+                f"[simulator] WARNING: G1 #{robot_id} spawn point intersects a collision "
+                f"proxy -- it will likely spawn falling over. Try a smaller "
+                f"--collision-cell-size (currently {args.collision_cell_size})."
+            )
         robots.append(
             scene.add_entity(
                 gs.morphs.URDF(
                     file=G1_URDF,
                     pos=robot_init_pos,
                     quat=robot_init_quat,
+                    scale=ROBOT_SCALE,
                 )
             )
         )
 
-    init_cos_yaw = np.cos(ROBOT_INIT_YAW)
-    init_sin_yaw = np.sin(ROBOT_INIT_YAW)
-    init_yaw_rotation = np.array(
-        ((init_cos_yaw, -init_sin_yaw, 0.0), (init_sin_yaw, init_cos_yaw, 0.0), (0.0, 0.0, 1.0)),
-        dtype=np.float32,
-    )
-    cameras = [
-        scene.add_camera(
-            res=CAM_RES,
-            pos=tuple(np.asarray(robot_init_pos) + init_yaw_rotation @ CAMERA_POS_REL),
-            lookat=tuple(np.asarray(robot_init_pos) + init_yaw_rotation @ CAMERA_LOOKAT_REL),
-            fov=45,
-            GUI=False,
+    # Poster: a flat, un-tiled textured Plane (a thin Box has no per-face UVs
+    # in Genesis, so it can't show a single right-side-up image). Position and
+    # facing were found by walking a robot to the spot and reading its pose
+    # off with the `p` teleop key.
+    poster_image_w, poster_image_h = Image.open(POSTER_TEXTURE).size
+    poster_size = (POSTER_HEIGHT * poster_image_w / poster_image_h, POSTER_HEIGHT)
+    for poster_id, (poster_xy, poster_yaw_deg) in enumerate(POSTER_INIT_POSES, start=1):
+        poster_facing = np.array((np.cos(np.radians(poster_yaw_deg)), np.sin(np.radians(poster_yaw_deg))))
+        poster_pos = (poster_xy[0], poster_xy[1], POSTER_FLOAT_HEIGHT + POSTER_HEIGHT / 2.0)
+        poster_quat = upright_plane_quat(poster_facing)
+        print(f"[simulator] poster #{poster_id} position: {poster_pos}  size: {poster_size}")
+        scene.add_entity(
+            gs.morphs.Plane(
+                pos=poster_pos,
+                quat=poster_quat,
+                plane_size=poster_size,
+                tile_size=poster_size,
+                fixed=True,
+            ),
+            surface=gs.surfaces.Default(
+                diffuse_texture=gs.textures.ImageTexture(image_path=POSTER_TEXTURE),
+            ),
         )
-        for robot_init_pos in robot_init_positions
-    ]
+
+    cameras = []
+    for robot_init_pos, robot_yaw_deg in zip(robot_init_positions, (yaw for _, yaw in ROBOT_INIT_POSES)):
+        cos_yaw = np.cos(np.radians(robot_yaw_deg))
+        sin_yaw = np.sin(np.radians(robot_yaw_deg))
+        yaw_rotation = np.array(
+            ((cos_yaw, -sin_yaw, 0.0), (sin_yaw, cos_yaw, 0.0), (0.0, 0.0, 1.0)),
+            dtype=np.float32,
+        )
+        cameras.append(
+            scene.add_camera(
+                res=CAM_RES,
+                pos=tuple(np.asarray(robot_init_pos) + yaw_rotation @ CAMERA_POS_REL),
+                lookat=tuple(np.asarray(robot_init_pos) + yaw_rotation @ CAMERA_LOOKAT_REL),
+                fov=45,
+                GUI=False,
+            )
+        )
 
     scene.build()   # no n_envs → rasterizer path, cam.render() returns (H, W, 3)
     camera_states = [{} for _ in range(ROBOT_COUNT)]
@@ -339,7 +515,7 @@ def main():
         dtype=gs.tc_float, device=gs.device,
     )  # (12,)
 
-    for robot, robot_init_pos in zip(robots, robot_init_positions):
+    for robot, robot_init_pos, robot_init_quat in zip(robots, robot_init_positions, robot_init_quats):
         robot.set_qpos(torch.cat([
             torch.tensor(robot_init_pos, dtype=gs.tc_float, device=gs.device),
             torch.tensor(robot_init_quat, dtype=gs.tc_float, device=gs.device),
@@ -413,7 +589,13 @@ def main():
 
         # 1. Receive velocity command
         # teleop_server forwards normalized velocity commands from the browser keyboard.
-        commands = recv_latest_commands(cmd_sock, commands)
+        commands, pose_print_robot_idxs = recv_latest_commands(cmd_sock, commands)
+        for robot_idx in pose_print_robot_idxs:
+            pos, yaw = get_robot_pose(robots[robot_idx])
+            print(
+                f"[simulator] G1 #{robot_idx + 1} pos=({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) "
+                f"yaw={np.degrees(yaw):.1f}deg forward=({np.cos(yaw):.3f}, {np.sin(yaw):.3f})"
+            )
 
         # 2. Policy inference. The gait phase is part of Unitree's training observation.
         phase = (policy_step * CONTROL_DT % GAIT_PERIOD_S) / GAIT_PERIOD_S

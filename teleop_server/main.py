@@ -198,6 +198,14 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                         )
                     except zmq.Again:
                         pass
+                elif data["type"] == "print_pose":
+                    try:
+                        cmd_sock.send_json(
+                            {"robot_id": robot_id, "type": "print_pose"},
+                            zmq.NOBLOCK,
+                        )
+                    except zmq.Again:
+                        pass
             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
                 break
     finally:
