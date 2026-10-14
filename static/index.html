@@ -49,14 +49,14 @@
         ws.addEventListener('message', event => {
           const data = JSON.parse(event.data);
           if (data.type === 'assigned') {
-            document.title = `Genesis Teleop — Robot ${data.robot_id}`;
-          } else if (data.type === 'no_robot') {
+            document.title = `Genesis Teleop — User ${data.avatar_id}`;
+          } else if (data.type === 'no_slot') {
             keys.clear();
             video.pause();
             video.srcObject = null;
             video.hidden = true;
             statusEl.classList.add('unavailable');
-            setStatus(data.message || 'No robot left');
+            setStatus(data.message || 'No user slot left');
           }
         });
       }

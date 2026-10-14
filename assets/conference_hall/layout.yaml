@@ -1,0 +1,70 @@
+# Metaverse Agora Conference Hall — single source of truth for the demo scene.
+#
+# World frame: meters, Z-up. The hall runs along X; the two board rows face
+# each other across the central aisle (Y=0).
+#
+# Board `yaw_deg` is the direction its poster faces (the board's front normal).
+# The presenting agent stands beside the board, offset in the board's local
+# frame (`forward` along the normal, `lateral` along the board's own left, i.e.
+# the normal rotated +90 deg about Z) and faces the same direction as the poster.
+#
+# Consumers:
+#   common/hall_layout.py            loader + shared geometry
+#   scripts/make_conference_hall.py  builds the hall mesh and poster quads
+#   simulator/hall.py, avatar.py     place posters and agents, move the avatars
+#   teleop_server (later)            proximity checks against boards/agents
+#
+# Boards without a `poster` get a numbered placeholder generated into build/.
+
+hall:
+  size: [21.0, 9.0]        # X, Y interior extent
+  wall_height: 3.0
+  wall_thickness: 0.2
+
+board:
+  poster_size: [2.0, 1.0]  # width, height of the printed area
+  poster_center_z: 1.3     # low enough to stay in the G1 TPS camera view
+  frame_margin: 0.1
+  panel_thickness: 0.05
+
+agent:
+  lateral: -1.4
+  forward: 0.6
+
+# Users and agents are cylinders; a dark bar at face height shows the heading.
+avatar:
+  radius: 0.25
+  height: 1.6
+  nose: {length: 0.3, thickness: 0.07, z: 1.45}
+  colors:
+    users: [[200, 165, 230], [140, 200, 245]]   # User 1 purple, User 2 blue
+    dummy: [225, 225, 225]
+    author: [245, 195, 80]
+  # Name tags drawn above heads in each user's view. Agents use their board's
+  # optional `name`, else "Author" / "Agent <board id>".
+  user_names: ["User 1", "User 2"]
+  name_tag_max_distance: 12.0
+
+# An agent turns `highlight` in a user's own view while it is within
+# `max_distance` of that user and inside the cone of `half_angle_deg` around
+# the user's heading (the heading bar), regardless of occlusion.
+gaze:
+  max_distance: 3.0
+  half_angle_deg: 30
+  highlight: [70, 210, 90]
+
+spawn:
+  xy: [-7.0, 0.0]        # camera sits 3 m behind; keep it inside the -X wall
+  yaw_deg: 0.0
+
+boards:
+  - {id: 1, pos: [-7.0,  3.6], yaw_deg: -90, role: dummy}
+  - {id: 2, pos: [-3.5,  3.6], yaw_deg: -90, role: dummy}
+  - {id: 3, pos: [ 3.5,  3.6], yaw_deg: -90, role: dummy}
+  - {id: 4, pos: [ 7.0,  3.6], yaw_deg: -90, role: dummy}
+  - {id: 5, pos: [-7.0, -3.6], yaw_deg:  90, role: dummy}
+  - {id: 6, pos: [-3.5, -3.6], yaw_deg:  90, role: dummy}
+  - {id: 7, pos: [ 3.5, -3.6], yaw_deg:  90, poster: posters/HeSS.png,        role: author,
+     name: "Author (HeSS)",
+     title: "HeSS: Head Sensitivity Score for Sparsity Redistribution in VGGT"}
+  - {id: 8, pos: [ 7.0, -3.6], yaw_deg:  90, role: dummy}

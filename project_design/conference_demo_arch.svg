@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" font-family="DejaVu Sans, Arial, sans-serif">
+  <rect width="1400" height="760" fill="#ffffff"/>
+
+  <!-- ── Genesis ─────────────────────────────────────────── -->
+  <rect x="20" y="60" width="270" height="200" rx="22" fill="#d9d9d9" stroke="#333" stroke-width="2"/>
+  <text x="155" y="112" font-size="24" text-anchor="middle">Genesis</text>
+  <text x="155" y="140" font-size="15" text-anchor="middle" fill="#444">Conference hall</text>
+  <rect x="45" y="160" width="220" height="80" rx="10" fill="#dbe9f8" stroke="#2b6cb0" stroke-width="1.5"/>
+  <text x="155" y="186" font-size="14" text-anchor="middle" fill="#1d4f86">Avatars (bodies only)</text>
+  <text x="155" y="207" font-size="13" text-anchor="middle" fill="#1d4f86">User 1, 2 · Agent ×8</text>
+  <text x="155" y="226" font-size="13" text-anchor="middle" fill="#1d4f86">cylinder + heading bar</text>
+
+  <!-- ── Teleop Server (hub) ─────────────────────────────── -->
+  <rect x="540" y="40" width="320" height="300" rx="22" fill="#d9d9d9" stroke="#333" stroke-width="2"/>
+  <text x="700" y="80" font-size="24" text-anchor="middle">Teleop Server</text>
+  <text x="700" y="102" font-size="14" text-anchor="middle" fill="#444">(hub)</text>
+  <rect x="565" y="118" width="270" height="44" rx="8" fill="#ececec" stroke="#666" stroke-width="1.2"/>
+  <text x="700" y="145" font-size="14" text-anchor="middle">Signaling · Slot assignment</text>
+  <rect x="565" y="172" width="270" height="62" rx="8" fill="#dbe9f8" stroke="#2b6cb0" stroke-width="1.5"/>
+  <text x="700" y="198" font-size="14" text-anchor="middle" fill="#1d4f86">Participants &amp; Proximity</text>
+  <text x="700" y="219" font-size="12" text-anchor="middle" fill="#1d4f86">who is near which poster / user / agent</text>
+  <rect x="565" y="244" width="270" height="74" rx="8" fill="#dbe9f8" stroke="#2b6cb0" stroke-width="1.5"/>
+  <text x="700" y="270" font-size="14" text-anchor="middle" fill="#1d4f86">Audio Router</text>
+  <text x="700" y="290" font-size="12" text-anchor="middle" fill="#1d4f86">per-listener mixer track</text>
+  <text x="700" y="307" font-size="12" text-anchor="middle" fill="#1d4f86">(proximity-gated voices)</text>
+
+  <!-- ── Browser ─────────────────────────────────────────── -->
+  <rect x="1110" y="60" width="270" height="200" rx="22" fill="#d9d9d9" stroke="#333" stroke-width="2"/>
+  <text x="1245" y="112" font-size="24" text-anchor="middle">Browser</text>
+  <text x="1245" y="140" font-size="15" text-anchor="middle" fill="#444">User 1, 2</text>
+  <rect x="1135" y="160" width="220" height="80" rx="10" fill="#dbe9f8" stroke="#2b6cb0" stroke-width="1.5"/>
+  <text x="1245" y="186" font-size="14" text-anchor="middle" fill="#1d4f86">Mic · Speaker</text>
+  <text x="1245" y="207" font-size="13" text-anchor="middle" fill="#1d4f86">Poster overlay</text>
+  <text x="1245" y="226" font-size="13" text-anchor="middle" fill="#1d4f86">(HTTPS for mic)</text>
+
+  <!-- ── Agent Backend ───────────────────────────────────── -->
+  <rect x="440" y="480" width="520" height="230" rx="22" fill="#dbe9f8" stroke="#2b6cb0" stroke-width="2"/>
+  <text x="700" y="520" font-size="24" text-anchor="middle" fill="#1d4f86">Agent Backend</text>
+  <text x="700" y="544" font-size="14" text-anchor="middle" fill="#1d4f86">headless participant · one process hosts the configured agents</text>
+  <g font-size="14" text-anchor="middle">
+    <rect x="465" y="570" width="95" height="44" rx="8" fill="#fff" stroke="#2b6cb0"/>
+    <text x="512" y="597">VAD</text>
+    <rect x="590" y="570" width="95" height="44" rx="8" fill="#fff" stroke="#2b6cb0"/>
+    <text x="637" y="597">STT</text>
+    <rect x="715" y="570" width="105" height="44" rx="8" fill="#fff" stroke="#2b6cb0"/>
+    <text x="767" y="590">Responder</text>
+    <text x="767" y="607" font-size="11" fill="#555">mock → LLM</text>
+    <rect x="850" y="570" width="85" height="44" rx="8" fill="#fff" stroke="#2b6cb0"/>
+    <text x="892" y="597">TTS</text>
+  </g>
+  <g stroke="#2b6cb0" stroke-width="1.8">
+    <line x1="560" y1="592" x2="576.0" y2="592.0" stroke="#2b6cb0"/><polygon points="588.0,592.0 576.0,597.5 576.0,586.5" fill="#2b6cb0"/>
+    <line x1="685" y1="592" x2="701.0" y2="592.0" stroke="#2b6cb0"/><polygon points="713.0,592.0 701.0,597.5 701.0,586.5" fill="#2b6cb0"/>
+    <line x1="820" y1="592" x2="836.0" y2="592.0" stroke="#2b6cb0"/><polygon points="848.0,592.0 836.0,597.5 836.0,586.5" fill="#2b6cb0"/>
+  </g>
+  <text x="700" y="650" font-size="13" text-anchor="middle" fill="#1d4f86">Author: listens to nearby users → answers by voice; turns toward the speaker</text>
+  <text x="700" y="672" font-size="13" text-anchor="middle" fill="#1d4f86">Dummy: idle (no pipeline)</text>
+  <text x="700" y="694" font-size="12" text-anchor="middle" fill="#555">poster text loaded from layout.yaml as responder context</text>
+
+  <!-- ── Genesis ⇄ Server (ZMQ) ──────────────────────────── -->
+  <g font-size="15" text-anchor="middle">
+    <line x1="292" y1="100" x2="526.0" y2="100.0" stroke="#222" stroke-width="2"/><polygon points="538.0,100.0 526.0,105.5 526.0,94.5" fill="#222"/>
+    <text x="415" y="91">Image frames (per user)</text>
+    <line x1="292" y1="150" x2="526.0" y2="150.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="538.0,150.0 526.0,155.5 526.0,144.5" fill="#2b6cb0"/>
+    <text x="415" y="141" fill="#1d4f86">Avatar poses</text>
+    <line x1="538" y1="205" x2="304.0" y2="205.0" stroke="#222" stroke-width="2"/><polygon points="292.0,205.0 304.0,199.5 304.0,210.5" fill="#222"/>
+    <text x="415" y="196">Action cmd</text>
+    <text x="415" y="226" font-size="12" fill="#1d4f86">users + agents (avatar_id)</text>
+    <text x="415" y="290" font-size="13" fill="#666">ZeroMQ (PUB/SUB, PUSH/PULL)</text>
+  </g>
+
+  <!-- ── Server ⇄ Browser (WebRTC + WebSocket) ───────────── -->
+  <g font-size="15" text-anchor="middle">
+    <line x1="862" y1="85" x2="1096.0" y2="85.0" stroke="#222" stroke-width="2"/><polygon points="1108.0,85.0 1096.0,90.5 1096.0,79.5" fill="#222"/>
+    <text x="985" y="76">Video stream</text>
+    <line x1="862" y1="125" x2="1096.0" y2="125.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="1108.0,125.0 1096.0,130.5 1096.0,119.5" fill="#2b6cb0"/>
+    <text x="985" y="116" fill="#1d4f86">Voice (proximity mix)</text>
+    <line x1="862" y1="165" x2="1096.0" y2="165.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="1108.0,165.0 1096.0,170.5 1096.0,159.5" fill="#2b6cb0"/>
+    <text x="985" y="156" fill="#1d4f86">Events (near_poster …)</text>
+    <line x1="1108" y1="205" x2="874.0" y2="205.0" stroke="#222" stroke-width="2"/><polygon points="862.0,205.0 874.0,199.5 874.0,210.5" fill="#222"/>
+    <text x="985" y="196">Action cmd</text>
+    <line x1="1108" y1="245" x2="874.0" y2="245.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="862.0,245.0 874.0,239.5 874.0,250.5" fill="#2b6cb0"/>
+    <text x="985" y="236" fill="#1d4f86">Mic audio</text>
+    <text x="985" y="290" font-size="13" fill="#666">WebRTC (media) + WebSocket (control)</text>
+  </g>
+
+  <!-- ── Server ⇄ Agent Backend (WebSocket) ──────────────── -->
+  <g font-size="14">
+    <line x1="630" y1="342" x2="630.0" y2="466.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="630.0,478.0 624.5,466.0 635.5,466.0" fill="#2b6cb0"/>
+    <text x="620" y="390" text-anchor="end" fill="#1d4f86">Nearby users' voice</text>
+    <text x="620" y="410" text-anchor="end" fill="#1d4f86">Events (who is near)</text>
+    <line x1="770" y1="478" x2="770.0" y2="354.0" stroke="#2b6cb0" stroke-width="2"/><polygon points="770.0,342.0 775.5,354.0 764.5,354.0" fill="#2b6cb0"/>
+    <text x="780" y="390" fill="#1d4f86">Agent voice (TTS)</text>
+    <text x="780" y="410" fill="#1d4f86">Action cmd (turn to speaker)</text>
+    <text x="980" y="455" font-size="13" text-anchor="middle" fill="#666">WebSocket (PCM 16 kHz + JSON)</text>
+  </g>
+
+  <!-- ── Legend ──────────────────────────────────────────── -->
+  <g font-size="13">
+    <rect x="1110" y="600" width="26" height="16" rx="4" fill="#d9d9d9" stroke="#333"/>
+    <text x="1146" y="613">existing</text>
+    <rect x="1110" y="630" width="26" height="16" rx="4" fill="#dbe9f8" stroke="#2b6cb0"/>
+    <text x="1146" y="643" fill="#1d4f86">new</text>
+  </g>
+</svg>

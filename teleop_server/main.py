@@ -13,7 +13,6 @@ import argparse
 import asyncio
 import json
 import pathlib
-import struct
 from io import BytesIO
 
 import aiohttp
@@ -25,9 +24,9 @@ from PIL import Image
 import av
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 
+from common.protocol import USER_COUNT, is_user_id, move_command, unpack_frame
+
 STATIC_DIR = pathlib.Path(__file__).parent.parent / "static"
-ROBOT_COUNT = 2
-FRAME_HEADER = struct.Struct("<BQ")  # one-byte robot id + timestamp (ms)
 
 
 # ---------------------------------------------------------------------------
@@ -74,30 +73,26 @@ class SimulatorVideoTrack(VideoStreamTrack):
 async def zmq_receiver(stores: list[LatestFrame], simulator_addr: str) -> None:
     ctx = zmq.asyncio.Context()
     sock = ctx.socket(zmq.SUB)
-    # Keep a small queue containing both robots. CONFLATE would retain only the
-    # globally newest message and could permanently starve one robot's stream.
-    sock.setsockopt(zmq.RCVHWM, ROBOT_COUNT * 2)
+    # Keep a small queue containing both users. CONFLATE would retain only the
+    # globally newest message and could permanently starve one user's stream.
+    sock.setsockopt(zmq.RCVHWM, USER_COUNT * 2)
     sock.setsockopt_string(zmq.SUBSCRIBE, "")
     sock.connect(simulator_addr)
     print(f"[teleop] subscribed to simulator at {simulator_addr}")
 
     try:
         while True:
-            data: bytes = await sock.recv()
-            if len(data) <= FRAME_HEADER.size:
+            frame = unpack_frame(await sock.recv())
+            if frame is None or not is_user_id(frame[0]):
                 continue
 
-            robot_id, _ = FRAME_HEADER.unpack_from(data)
-            if not 1 <= robot_id <= len(stores):
-                continue
-
-            jpeg_bytes = data[FRAME_HEADER.size:]
+            user_id, _, jpeg_bytes = frame
             try:
-                stores[robot_id - 1].frame = np.array(
+                stores[user_id - 1].frame = np.array(
                     Image.open(BytesIO(jpeg_bytes)).convert("RGB")
                 )
             except Exception as exc:
-                print(f"[teleop] frame decode error for robot {robot_id}: {exc}")
+                print(f"[teleop] frame decode error for user {user_id}: {exc}")
     finally:
         sock.close()
         ctx.term()
@@ -127,10 +122,10 @@ async def client_js_handler(request: web.Request) -> web.Response:
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    available_robot_ids: list[int] = request.app["available_robot_ids"]
-    if not available_robot_ids:
-        print("[signaling] client rejected: no robot left")
-        await ws.send_json({"type": "no_robot", "message": "No robot left"})
+    available_user_ids: list[int] = request.app["available_user_ids"]
+    if not available_user_ids:
+        print("[signaling] client rejected: no user slot left")
+        await ws.send_json({"type": "no_slot", "message": "No user slot left"})
         # Keep the connection open so the browser can display the terminal
         # state instead of entering its automatic reconnect loop.
         async for _ in ws:
@@ -139,8 +134,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
     # No await occurs between checking and popping, so asyncio handlers assign
     # the two slots atomically and in connection order.
-    robot_id = available_robot_ids.pop(0)
-    print(f"[signaling] client connected → robot {robot_id}")
+    user_id = available_user_ids.pop(0)
+    print(f"[signaling] client connected → user {user_id}")
 
     stores: list[LatestFrame] = request.app["frame_stores"]
     cmd_sock = request.app["cmd_sock"]
@@ -148,15 +143,15 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
     @pc.on("connectionstatechange")
     async def on_connection_state_change():
-        print(f"[webrtc] robot {robot_id} state → {pc.connectionState}")
+        print(f"[webrtc] user {user_id} state → {pc.connectionState}")
         if pc.connectionState == "failed":
             await pc.close()
             await ws.close(code=1011, message=b"WebRTC connection failed")
 
-    pc.addTrack(SimulatorVideoTrack(stores[robot_id - 1]))
+    pc.addTrack(SimulatorVideoTrack(stores[user_id - 1]))
 
     try:
-        await ws.send_json({"type": "assigned", "robot_id": robot_id})
+        await ws.send_json({"type": "assigned", "avatar_id": user_id})
 
         # Wait for ICE gathering to complete so we can send a self-contained
         # offer (host candidates are collected almost instantly on localhost).
@@ -172,7 +167,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
         await asyncio.wait_for(ice_done.wait(), timeout=10.0)
 
         await ws.send_json({"type": "offer", "sdp": pc.localDescription.sdp})
-        print(f"[signaling] offer sent for robot {robot_id}")
+        print(f"[signaling] offer sent for user {user_id}")
 
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -182,18 +177,13 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                         RTCSessionDescription(sdp=data["sdp"], type="answer")
                     )
                     print(
-                        f"[signaling] robot {robot_id} answer received — "
+                        f"[signaling] user {user_id} answer received — "
                         "WebRTC handshake complete"
                     )
                 elif data["type"] == "move":
                     try:
                         cmd_sock.send_json(
-                            {
-                                "robot_id": robot_id,
-                                "vx": data["vx"],
-                                "vy": data["vy"],
-                                "wz": data.get("wz", 0),
-                            },
+                            move_command(user_id, data["vx"], data["vy"], data.get("wz", 0)),
                             zmq.NOBLOCK,
                         )
                     except zmq.Again:
@@ -202,16 +192,13 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 break
     finally:
         try:
-            cmd_sock.send_json(
-                {"robot_id": robot_id, "vx": 0, "vy": 0, "wz": 0},
-                zmq.NOBLOCK,
-            )
+            cmd_sock.send_json(move_command(user_id), zmq.NOBLOCK)
         except zmq.Again:
             pass
         await pc.close()
-        available_robot_ids.append(robot_id)
-        available_robot_ids.sort()
-        print(f"[signaling] client disconnected; robot {robot_id} released")
+        available_user_ids.append(user_id)
+        available_user_ids.sort()
+        print(f"[signaling] client disconnected; user {user_id} released")
 
     return ws
 
@@ -228,9 +215,9 @@ async def on_startup(app: web.Application) -> None:
     server_host = args.host
     server_port = args.http_port
 
-    stores = [LatestFrame() for _ in range(ROBOT_COUNT)]
+    stores = [LatestFrame() for _ in range(USER_COUNT)]
     app["frame_stores"] = stores
-    app["available_robot_ids"] = list(range(1, ROBOT_COUNT + 1))
+    app["available_user_ids"] = list(range(1, USER_COUNT + 1))
     app["zmq_task"] = asyncio.create_task(zmq_receiver(stores, simulator_addr))
 
     cmd_ctx = zmq.Context()

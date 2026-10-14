@@ -2,3 +2,7 @@
 __pycache__
 logs/
 assets/dsail_mesh.ply
+assets/garden/
+assets/301/
+assets/conference_hall/build/
+__nyx_cache__/

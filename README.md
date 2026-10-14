@@ -8,32 +8,36 @@ uv pip install genesis-world pyzmq aiohttp aiortc av
 
 ## Usage
 
-### Humanoid controller
+### Conference hall demo
 
-The simulator uses Unitree's official 12-DoF G1 URDF and recurrent locomotion
-policy. They are vendored in `assets/urdf/g1/` and
-`assets/checkpoints/g1-locomotion/`. The policy accepts forward, lateral, and
-yaw velocity commands at 50 Hz.
-
-```bash
-CUDA_VISIBLE_DEVICES=3 EGL_DEVICE_ID=3 uv run python -m simulator.main
-```
-
-The existing Go2 training/evaluation scripts remain available as references,
-but are no longer used by the simulator entry point.
-
-### Launch simulator
+Users and presenter agents are cylinders with a bar at face height showing
+their heading; the scene is defined by `assets/conference_hall/layout.yaml`
+(see `project_design/06_conference_hall_demo.md`). Build the hall once, then
+start the simulator and the teleop server:
 
 ```bash
-# Default ports: pub=5565, cmd=5566, http=8090
-CUDA_VISIBLE_DEVICES=3 EGL_DEVICE_ID=3 python -m simulator.main
+uv run python scripts/make_conference_hall.py
+# Default ports: pub=5555, cmd=5556, http=8090
+CUDA_VISIBLE_DEVICES=0 EGL_DEVICE_ID=0 uv run python -m simulator.main
 uv run python -m teleop_server.main
 ```
 
+Open `http://<host>:8090`: W/S forward/back, A/D strafe, Q/E turn. The first two
+browsers get User 1 and User 2.
+
 ```bash
 # Custom ports example
-CUDA_VISIBLE_DEVICES=3 EGL_DEVICE_ID=3 uv run python -m simulator.main --pub-port 6000 --cmd-port 6001
+CUDA_VISIBLE_DEVICES=0 EGL_DEVICE_ID=0 uv run python -m simulator.main --pub-port 6000 --cmd-port 6001
 uv run python -m teleop_server.main --sub-port 6000 --cmd-port 6001 --http-port 9000 --host 0.0.0.0
+```
+
+### Legacy G1 humanoid simulator
+
+The previous simulator (Unitree G1 with its recurrent locomotion policy, DSAIL
+scan / demo mesh / Nyx 3DGS scenes) is kept as `simulator.legacy_g1_main`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 EGL_DEVICE_ID=0 uv run python -m simulator.legacy_g1_main
 ```
 
 The G1 asset and pretrained policy come from Unitree Robotics'
