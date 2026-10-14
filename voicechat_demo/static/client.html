@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Penguin voice chat</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0f16; color: #e7ecf5;
+         font-family: system-ui, "Noto Sans KR", sans-serif; }
+  #wrap { max-width: 780px; margin: 0 auto; padding: 18px 16px 36px; }
+  h1 { font-size: 16px; margin: 0 0 3px; font-weight: 650; }
+  .sub { color: #8f9cb5; font-size: 12.5px; margin: 0 0 13px; }
+  #stage { position: relative; aspect-ratio: 8 / 5; background: #05070c;
+           border: 1px solid #263145; border-radius: 11px; overflow: hidden; }
+  #view { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #boot { position: absolute; inset: 0; display: flex; align-items: center;
+          justify-content: center; font-size: 13px; color: #7d8da6; }
+  #who { position: absolute; top: 10px; left: 12px; font-size: 12px;
+         color: #f0913f; font-weight: 650; text-shadow: 0 1px 3px #000; }
+  #near { position: absolute; top: 10px; right: 12px; font-size: 12px;
+          color: #9fb0c9; text-shadow: 0 1px 3px #000; }
+  #bar { display: flex; gap: 8px; margin-top: 11px; }
+  input, button { font: inherit; border-radius: 8px; border: 1px solid #2e3a4f;
+                  background: #161e2c; color: #e7ecf5; padding: 9px 12px; }
+  #text { flex: 1; }
+  button { background: #e2782a; border-color: #e2782a; color: #fff;
+           font-weight: 650; cursor: pointer; }
+  #log { margin-top: 11px; font-size: 12.5px; color: #9fb0c9; line-height: 1.7;
+         max-height: 132px; overflow-y: auto; }
+  #log b { color: #e7ecf5; }
+  .note { margin-top: 12px; font-size: 11.5px; color: #6c7c96; line-height: 1.6; }
+  kbd { border: 1px solid #3a4a63; border-radius: 5px; padding: 1px 6px;
+        font-family: ui-monospace, monospace; font-size: 11px; }
+</style>
+
+<div id="wrap">
+  <h1>Penguin voice chat</h1>
+  <p class="sub">Open this page in two or three tabs &mdash; one tab is one penguin.
+     Walk around, type a line, and whoever is close enough hears it.</p>
+
+  <div id="stage">
+    <img id="view" alt="">
+    <div id="boot">connecting&hellip;</div>
+    <div id="who"></div>
+    <div id="near"></div>
+  </div>
+
+  <div id="bar">
+    <input id="text" placeholder="Say something&hellip;" autocomplete="off" maxlength="300">
+    <button id="send">Speak</button>
+  </div>
+
+  <div id="log"></div>
+
+  <p class="note">
+    <kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&rarr;</kbd><kbd>&darr;</kbd> walk
+    &nbsp;&middot;&nbsp; <kbd>Enter</kbd> speak
+    &nbsp;&middot;&nbsp; the picture is rendered by Genesis on the server
+  </p>
+</div>
+
+<script src="/voicechat.js"></script>
+<script src="/static/client.js"></script>
